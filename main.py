@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import json
 import logging
 import logging.handlers
@@ -61,10 +64,17 @@ def resource_path(name: str) -> Path:
     return (bundle_dir / name).resolve()
 
 
-APP_DIR    = app_dir()
+import os
+
+APP_DIR = app_dir()
+
+# Arquivos graváveis do usuário
+USER_DATA_DIR = Path(os.getenv("LOCALAPPDATA")) / "LeituraBiblica"
+USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
 MODEL_FILE = resource_path(MODEL_NAME)
-LOG_FILE   = APP_DIR / "logs.log"
-CONFIG_FILE = APP_DIR / "config.json"
+LOG_FILE = USER_DATA_DIR / "logs.log"
+CONFIG_FILE = USER_DATA_DIR / "config.json"
 
 # Default output folder — overridable via config.json key "output_dir".
 OUTPUT_DIR_DEFAULT = Path.home() / "Documents" / "LeituraBiblica"
@@ -103,25 +113,32 @@ PLACEHOLDERS_VERSICULO = (
 
 
 # ── Design tokens ──────────────────────────────────────────────────────────────
-BG_APP        = "#0f1117"
-BG_CARD       = "#1a1d27"
-BG_INPUT      = "#22263a"
+BG_APP        = "#0b0d14"          # deeper, richer background
+BG_CARD       = "#141720"          # glass card base — very dark navy
+BG_CARD_INNER = "#0f1219"          # inset panel (slightly darker than card)
+BG_INPUT      = "#1c2035"          # input background, muted navy
 BG_BTN        = "#2563eb"
 BG_BTN_HOVER  = "#1d4ed8"
-BG_PROG_TRACK = "#252a3d"
+BG_PROG_TRACK = "#1c2035"
 BG_PROG_FILL  = "#3b82f6"
 
+# Glass / acrylic accents
+CARD_BORDER      = "#252d45"       # subtle border for floating effect
+CARD_BORDER_TOP  = "#2e3a55"       # brighter top edge (light catch)
+INPUT_BORDER     = "#252d45"
+INPUT_BORDER_FOC = "#2563eb"
+
 FG_TITLE   = "#f0f4ff"
-FG_LABEL   = "#a8b3cf"
-FG_INPUT   = "#e2e8f0"
-FG_HINT    = "#5b6a8a"
+FG_LABEL   = "#9baac4"
+FG_INPUT   = "#dde4f0"
+FG_HINT    = "#4a5878"
 FG_SUCCESS = "#34d399"
 FG_ERROR   = "#f87171"
 FG_WARNING = "#fbbf24"
 FG_WHITE   = "#ffffff"
 
 FONT_FAMILY = "Segoe UI"
-RADIUS      = 10
+RADIUS      = 14                   # larger radius → rounder, softer cards
 
 # Icons (Unicode)
 ICON_BOOK  = "📖"
@@ -469,8 +486,17 @@ def gerar_powerpoint(
     atualizar_progresso: Callable[[int], None] | None = None,
     substituir_existente: bool = False,
     config: dict[str, str] | None = None,
+    verso_inicio: int | None = None,
+    verso_fim: int | None = None,
 ) -> ResultadoGeracao:
-    """Generate the presentation and return a ResultadoGeracao on success."""
+    """Generate the presentation and return a ResultadoGeracao on success.
+
+    *verso_inicio* and *verso_fim* are 1-based verse numbers.  Both are
+    optional:
+      • Neither set → generate all verses.
+      • Only *verso_fim* set → generate from verse 1 to *verso_fim*.
+      • Both set → generate [verso_inicio .. verso_fim] inclusive.
+    """
     inicio = time.perf_counter()
 
     titulo = titulo.strip()
@@ -479,13 +505,40 @@ def gerar_powerpoint(
 
     validar_modelo(MODEL_FILE)
     leitura = ler_texto_entrada(texto_leitura)
+
+    # ── Apply verse range ─────────────────────────────────────────────────────
+    total_original = len(leitura.versiculos)
+    idx_inicio = (verso_inicio - 1) if verso_inicio is not None else 0
+    idx_fim    = verso_fim if verso_fim is not None else total_original  # exclusive
+
+    # Guard against out-of-range values (should already be validated in the UI
+    # layer, but we double-check here for safety).
+    idx_inicio = max(0, min(idx_inicio, total_original))
+    idx_fim    = max(idx_inicio, min(idx_fim, total_original))
+
+    versiculos_selecionados = leitura.versiculos[idx_inicio:idx_fim]
+    if not versiculos_selecionados:
+        raise GeradorSalmosError(
+            "O intervalo de versículos selecionado não contém versículos.\n\n"
+            "Verifique os campos 'De' e 'Até' e tente novamente."
+        )
+
+    # Rebuild leitura with the filtered verses so the rest of the function
+    # stays unchanged.
+    leitura = LeituraBiblica(
+        livro=leitura.livro,
+        capitulo=leitura.capitulo,
+        versiculos=versiculos_selecionados,
+    )
+
     caminho_saida = caminho_saida_para(leitura, config)
 
     logger.info(
-        "Generation started | book=%s | chapter=%s | verses=%d | title=%r | output=%s",
+        "Generation started | book=%s | chapter=%s | verses=%d (of %d) | title=%r | output=%s",
         leitura.livro,
         leitura.capitulo,
         len(leitura.versiculos),
+        total_original,
         titulo,
         caminho_saida,
     )
@@ -674,6 +727,8 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         self.titulo_var            = tk.StringVar()
         self.status_var            = tk.StringVar(value="")
         self.progresso_var         = tk.DoubleVar(value=0)
+        self.verso_de_var          = tk.StringVar()
+        self.verso_ate_var         = tk.StringVar()
         self._gerando              = False
         self._config               = carregar_configuracao()
         self._target_progress      = 0.0
@@ -736,12 +791,12 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
 
         # ── Header ────────────────────────────────────────────────────────────
         header = tk.Frame(outer, bg=BG_APP)
-        header.grid(row=0, column=0, sticky="ew", padx=32, pady=(28, 0))
+        header.grid(row=0, column=0, sticky="ew", padx=36, pady=(32, 0))
         header.grid_columnconfigure(0, weight=1)
 
         tk.Label(
             header, text=ICON_BOOK, bg=BG_APP,
-            font=(FONT_FAMILY, 28), fg="#93c5fd",
+            font=(FONT_FAMILY, 30), fg="#93c5fd",
         ).grid(row=0, column=0, sticky="w")
 
         tk.Label(
@@ -753,29 +808,35 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
             header,
             text="Gera apresentações .pptx preservando fontes, cores, animações e transições do modelo.",
             bg=BG_APP, fg=FG_HINT, font=(FONT_FAMILY, 10),
-        ).grid(row=2, column=0, sticky="w", pady=(3, 0))
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
 
         # ── Divider ───────────────────────────────────────────────────────────
-        tk.Frame(outer, bg="#252a3d", height=1).grid(
-            row=1, column=0, sticky="ew", padx=32, pady=20
+        tk.Frame(outer, bg=CARD_BORDER, height=1).grid(
+            row=1, column=0, sticky="ew", padx=36, pady=24
         )
 
-        # ── Card ──────────────────────────────────────────────────────────────
-        card = tk.Frame(outer, bg=BG_CARD, bd=0)
-        card.grid(row=2, column=0, sticky="nsew", padx=32, pady=(0, 8))
+        # ── Card — floating glass panel ───────────────────────────────────────
+        # Outer border frame gives the "raised card" illusion on dark bg
+        card_border = tk.Frame(outer, bg=CARD_BORDER_TOP, bd=0)
+        card_border.grid(row=2, column=0, sticky="nsew", padx=32, pady=(0, 12))
+        card_border.grid_columnconfigure(0, weight=1)
+        card_border.grid_rowconfigure(0, weight=1)
+
+        card = tk.Frame(card_border, bg=BG_CARD, bd=0)
+        card.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
         card.grid_columnconfigure(0, weight=1)
         card.grid_rowconfigure(0, weight=1)
 
         inner = tk.Frame(card, bg=BG_CARD)
-        inner.pack(fill="both", expand=True, padx=28, pady=24)
+        inner.pack(fill="both", expand=True, padx=32, pady=28)
         inner.grid_columnconfigure(0, weight=1)
         inner.grid_rowconfigure(1, weight=1)
 
         # Scripture
         self._field_label(inner, "Scripture", row=0)
 
-        scripture_frame = tk.Frame(inner, bg=BG_CARD)
-        scripture_frame.grid(row=1, column=0, sticky="nsew", pady=(6, 20))
+        scripture_frame = tk.Frame(inner, bg=CARD_BORDER, bd=0)
+        scripture_frame.grid(row=1, column=0, sticky="nsew", pady=(8, 22))
         scripture_frame.grid_columnconfigure(0, weight=1)
         scripture_frame.grid_rowconfigure(0, weight=1)
 
@@ -784,11 +845,10 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
             bg=BG_INPUT, fg=FG_HINT,
             insertbackground=FG_INPUT,
             relief="flat", font=(FONT_FAMILY, 10),
-            bd=0, highlightthickness=1,
-            highlightbackground="#2e3a52", highlightcolor=BG_BTN,
-            wrap="word", height=12, padx=10, pady=10,
+            bd=0, highlightthickness=0,
+            wrap="word", height=12, padx=14, pady=12,
         )
-        self.scripture_text.grid(row=0, column=0, sticky="nsew")
+        self.scripture_text.grid(row=0, column=0, sticky="nsew", padx=1, pady=1)
         self.scripture_text.insert("1.0", self._SCRIPTURE_PLACEHOLDER)
         self.scripture_text.bind("<FocusIn>",  self._limpar_placeholder_scripture)
         self.scripture_text.bind("<FocusOut>", self._restaurar_placeholder_scripture)
@@ -800,8 +860,54 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         # Title
         self._field_label(inner, "Título da leitura", row=2)
 
-        self.entry_titulo = self._entry(inner, self.titulo_var)
-        self.entry_titulo.grid(row=3, column=0, sticky="ew", pady=(6, 20), ipady=6)
+        self.entry_titulo = self._entry(inner, self.titulo_var, inner_ipady=8)
+        self.entry_titulo.grid(row=3, column=0, sticky="ew", pady=(8, 22))
+
+        # ── Verse range (optional) ────────────────────────────────────────────
+        range_outer = tk.Frame(inner, bg=BG_CARD)
+        range_outer.grid(row=4, column=0, sticky="ew", pady=(0, 22))
+        range_outer.grid_columnconfigure(0, weight=1)
+
+        # Collapsible toggle
+        self._range_visible = False
+        self._range_toggle_btn = tk.Button(
+            range_outer,
+            text="▶  Intervalo de versículos  (opcional)",
+            command=self._toggle_range_section,
+            bg=BG_CARD, fg=FG_LABEL,
+            activebackground=BG_CARD, activeforeground=FG_TITLE,
+            relief="flat", bd=0, padx=0, pady=0,
+            font=(FONT_FAMILY, 9, "bold"), cursor="hand2", anchor="w",
+        )
+        self._range_toggle_btn.grid(row=0, column=0, sticky="w")
+
+        self._range_frame = tk.Frame(range_outer, bg=BG_CARD)
+        self._range_frame.grid_columnconfigure(1, weight=0)
+
+        tk.Label(
+            self._range_frame, text="De:", bg=BG_CARD, fg=FG_LABEL,
+            font=(FONT_FAMILY, 9),
+        ).grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(12, 0))
+
+        self.entry_verso_de = self._entry(self._range_frame, self.verso_de_var, inner_ipady=6)
+        self.entry_verso_de.configure(width=8)
+        self.entry_verso_de.grid(row=0, column=1, sticky="w", pady=(12, 0))
+
+        tk.Label(
+            self._range_frame, text="Até:", bg=BG_CARD, fg=FG_LABEL,
+            font=(FONT_FAMILY, 9),
+        ).grid(row=0, column=2, sticky="w", padx=(24, 8), pady=(12, 0))
+
+        self.entry_verso_ate = self._entry(self._range_frame, self.verso_ate_var, inner_ipady=6)
+        self.entry_verso_ate.configure(width=8)
+        self.entry_verso_ate.grid(row=0, column=3, sticky="w", pady=(12, 0))
+
+        tk.Label(
+            self._range_frame,
+            text="Deixe em branco para gerar todos os versículos.",
+            bg=BG_CARD, fg=FG_HINT,
+            font=(FONT_FAMILY, 8),
+        ).grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 0))
 
         # Status
         self.status_lbl = tk.Label(
@@ -810,14 +916,14 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
             font=(FONT_FAMILY, 9), anchor="w",
             wraplength=640, justify="left",
         )
-        self.status_lbl.grid(row=4, column=0, sticky="ew", pady=(0, 8))
+        self.status_lbl.grid(row=5, column=0, sticky="ew", pady=(0, 10))
 
         # Progress bar
-        self._progress_frame(inner, row=5)
+        self._progress_frame(inner, row=6)
 
         # Buttons
         btn_row = tk.Frame(inner, bg=BG_CARD)
-        btn_row.grid(row=6, column=0, sticky="ew", pady=(18, 0))
+        btn_row.grid(row=7, column=0, sticky="ew", pady=(20, 0))
         btn_row.grid_columnconfigure(0, weight=1)
 
         self.botao_gerar = self._primary_button(
@@ -829,10 +935,10 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         self._footer_lbl = tk.Label(
             outer,
             text=self._footer_text(),
-            bg=BG_APP, fg="#2e3a52",
+            bg=BG_APP, fg="#2a3550",
             font=(FONT_FAMILY, 8),
         )
-        self._footer_lbl.grid(row=3, column=0, pady=(4, 14))
+        self._footer_lbl.grid(row=3, column=0, pady=(6, 16))
 
     def _footer_text(self) -> str:
         return f"modelo: {MODEL_FILE.name}  ·  saída: {output_dir(self._config)}"
@@ -847,22 +953,47 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         lbl.grid(row=row, column=0, sticky="w")
         return lbl
 
-    def _entry(self, parent, var: tk.Variable) -> tk.Entry:
-        return tk.Entry(
-            parent, textvariable=var,
+    def _entry(self, parent, var: tk.Variable, inner_ipady: int = 6) -> tk.Entry:
+        # Wrap in a 1px border frame to simulate a rounded inset border
+        border = tk.Frame(parent, bg=INPUT_BORDER, bd=0)
+        entry = tk.Entry(
+            border, textvariable=var,
             bg=BG_INPUT, fg=FG_INPUT,
             insertbackground=FG_INPUT,
             relief="flat", font=(FONT_FAMILY, 10),
-            bd=0, highlightthickness=1,
-            highlightbackground="#2e3a52", highlightcolor=BG_BTN,
+            bd=0, highlightthickness=0,
         )
+        entry.pack(fill="both", expand=True, padx=1, pady=1, ipady=inner_ipady)
+
+        def _on_focus_in(_e):
+            border.configure(bg=INPUT_BORDER_FOC)
+        def _on_focus_out(_e):
+            border.configure(bg=INPUT_BORDER)
+
+        entry.bind("<FocusIn>",  _on_focus_in)
+        entry.bind("<FocusOut>", _on_focus_out)
+
+        # Forward key methods from border frame to inner entry
+        border.focus_set = entry.focus_set
+
+        _orig_configure = border.configure
+        def _border_configure(**kw):
+            # Keys that belong to Entry (state, width, etc.) go to inner entry
+            entry_keys = {k: kw.pop(k) for k in list(kw) if k in ("state", "width")}
+            if entry_keys:
+                entry.configure(**entry_keys)
+            if kw:
+                _orig_configure(**kw)
+        border.configure = _border_configure
+
+        return border
 
     def _primary_button(self, parent, text: str, command) -> tk.Button:
         btn = tk.Button(
             parent, text=text, command=command,
             bg=BG_BTN, fg=FG_WHITE,
             activebackground=BG_BTN_HOVER, activeforeground=FG_WHITE,
-            relief="flat", bd=0, padx=22, pady=10,
+            relief="flat", bd=0, padx=28, pady=12,
             font=(FONT_FAMILY, 11, "bold"), cursor="hand2",
         )
         btn.bind("<Enter>", lambda _: btn.configure(bg=BG_BTN_HOVER))
@@ -875,19 +1006,19 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         frame.grid_columnconfigure(0, weight=1)
 
         self._prog_canvas = tk.Canvas(
-            frame, height=6, bg=BG_PROG_TRACK, bd=0, highlightthickness=0,
+            frame, height=8, bg=BG_PROG_TRACK, bd=0, highlightthickness=0,
         )
         self._prog_canvas.grid(row=0, column=0, sticky="ew")
         self._prog_canvas.bind("<Configure>", self._redraw_progress)
         self._prog_fill = self._prog_canvas.create_rectangle(
-            0, 0, 0, 6, fill=BG_PROG_FILL, outline="",
+            0, 0, 0, 8, fill=BG_PROG_FILL, outline="",
         )
 
     def _redraw_progress(self, event=None) -> None:
         w     = self._prog_canvas.winfo_width()
         pct   = self.progresso_var.get() / 100.0
         fill_w = int(w * pct)
-        self._prog_canvas.coords(self._prog_fill, 0, 0, fill_w, 6)
+        self._prog_canvas.coords(self._prog_fill, 0, 0, fill_w, 8)
 
     # ── Progress animation ────────────────────────────────────────────────────
 
@@ -1021,6 +1152,8 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         estado = "disabled" if gerando else "normal"
         self.scripture_text.configure(state=estado)
         self.entry_titulo.configure(state=estado)
+        self.entry_verso_de.configure(state=estado)
+        self.entry_verso_ate.configure(state=estado)
         self.botao_gerar.configure(
             state=estado,
             bg="#1a3a8f" if gerando else BG_BTN,
@@ -1031,7 +1164,27 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
         self.scripture_text.delete("1.0", "end")
         self.scripture_text.insert("1.0", self._SCRIPTURE_PLACEHOLDER)
         self.titulo_var.set("")
+        self.verso_de_var.set("")
+        self.verso_ate_var.set("")
         self.scripture_text.focus_set()
+
+    # ── Verse range toggle ────────────────────────────────────────────────────
+
+    def _toggle_range_section(self) -> None:
+        self._range_visible = not self._range_visible
+        if self._range_visible:
+            self._range_frame.grid(row=1, column=0, sticky="ew")
+            self._range_toggle_btn.configure(
+                text="▼  Intervalo de versículos  (opcional)"
+            )
+        else:
+            self._range_frame.grid_remove()
+            self._range_toggle_btn.configure(
+                text="▶  Intervalo de versículos  (opcional)"
+            )
+            # Clear values when hidden so they don't silently filter on next run.
+            self.verso_de_var.set("")
+            self.verso_ate_var.set("")
 
     # ── Scripture field placeholder ───────────────────────────────────────────
 
@@ -1096,6 +1249,102 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
             self.entry_titulo.focus_set()
             return
 
+        # ── Validate verse range ──────────────────────────────────────────────
+        total_versiculos = len(leitura.versiculos)
+        verso_de: int | None = None
+        verso_ate: int | None = None
+
+        raw_de  = self.verso_de_var.get().strip()
+        raw_ate = self.verso_ate_var.get().strip()
+
+        if raw_de or raw_ate:
+            # Parse "De"
+            if raw_de:
+                if not raw_de.isdigit():
+                    self._set_status_erro("O campo 'De' deve ser um número inteiro.")
+                    messagebox.showerror(
+                        "Intervalo inválido",
+                        f"O campo 'De' contém um valor inválido: \"{raw_de}\"\n\n"
+                        "Digite apenas um número inteiro positivo.",
+                        parent=self,
+                    )
+                    self.entry_verso_de.focus_set()
+                    return
+                verso_de = int(raw_de)
+                if verso_de < 1:
+                    self._set_status_erro("O campo 'De' deve ser pelo menos 1.")
+                    messagebox.showerror(
+                        "Intervalo inválido",
+                        "O versículo inicial ('De') deve ser pelo menos 1.",
+                        parent=self,
+                    )
+                    self.entry_verso_de.focus_set()
+                    return
+                if verso_de > total_versiculos:
+                    self._set_status_erro(
+                        f"O campo 'De' ({verso_de}) excede o total de versículos ({total_versiculos})."
+                    )
+                    messagebox.showerror(
+                        "Intervalo inválido",
+                        f"O versículo inicial ({verso_de}) é maior que o total de\n"
+                        f"versículos no texto ({total_versiculos}).",
+                        parent=self,
+                    )
+                    self.entry_verso_de.focus_set()
+                    return
+
+            # Parse "Até"
+            if raw_ate:
+                if not raw_ate.isdigit():
+                    self._set_status_erro("O campo 'Até' deve ser um número inteiro.")
+                    messagebox.showerror(
+                        "Intervalo inválido",
+                        f"O campo 'Até' contém um valor inválido: \"{raw_ate}\"\n\n"
+                        "Digite apenas um número inteiro positivo.",
+                        parent=self,
+                    )
+                    self.entry_verso_ate.focus_set()
+                    return
+                verso_ate = int(raw_ate)
+                if verso_ate < 1:
+                    self._set_status_erro("O campo 'Até' deve ser pelo menos 1.")
+                    messagebox.showerror(
+                        "Intervalo inválido",
+                        "O versículo final ('Até') deve ser pelo menos 1.",
+                        parent=self,
+                    )
+                    self.entry_verso_ate.focus_set()
+                    return
+                if verso_ate > total_versiculos:
+                    self._set_status_erro(
+                        f"O campo 'Até' ({verso_ate}) excede o total de versículos ({total_versiculos})."
+                    )
+                    messagebox.showerror(
+                        "Intervalo inválido",
+                        f"O versículo final ({verso_ate}) é maior que o total de\n"
+                        f"versículos no texto ({total_versiculos}).\n\n"
+                        f"O texto tem {total_versiculos} versículo(s).",
+                        parent=self,
+                    )
+                    self.entry_verso_ate.focus_set()
+                    return
+
+            # Cross-field check
+            ef_de  = verso_de  if verso_de  is not None else 1
+            ef_ate = verso_ate if verso_ate is not None else total_versiculos
+            if ef_de > ef_ate:
+                self._set_status_erro(
+                    f"Intervalo inválido: 'De' ({ef_de}) é maior que 'Até' ({ef_ate})."
+                )
+                messagebox.showerror(
+                    "Intervalo inválido",
+                    f"O versículo inicial ({ef_de}) não pode ser maior\n"
+                    f"que o versículo final ({ef_ate}).",
+                    parent=self,
+                )
+                self.entry_verso_de.focus_set()
+                return
+
         # ── Confirm overwrite ─────────────────────────────────────────────────
         caminho_saida = caminho_saida_para(leitura, self._config)
         substituir_existente = False
@@ -1115,10 +1364,12 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
 
         # ── Start generation ──────────────────────────────────────────────────
         logger.info(
-            "Generation requested | %s | verses=%d | title=%r",
+            "Generation requested | %s | verses=%d | title=%r | range=[%s..%s]",
             leitura.livro_capitulo,
             len(leitura.versiculos),
             titulo_leitura,
+            verso_de or "início",
+            verso_ate or "fim",
         )
         self._gerando = True
         self._set_ui_gerando(True)
@@ -1134,6 +1385,8 @@ class Aplicacao(ctk.CTk if CTK_AVAILABLE else tk.Tk):
                     self.atualizar_progresso,
                     substituir_existente=substituir_existente,
                     config=self._config,
+                    verso_inicio=verso_de,
+                    verso_fim=verso_ate,
                 )
             except GeradorSalmosError as exc:
                 self.after(0, self._on_erro, str(exc))
