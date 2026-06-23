@@ -1,28 +1,60 @@
+#define MyAppId "{4DCA77C4-0D35-4AE3-B4AA-FB4A4D699332}"
+#define MyAppName "Leitura Bíblica"
+#define MyAppVersion "1.1.0"
+#define MyAppPublisher "Lucas Carbone Vieira"
+#define MyAppExeName "Leitura Bíblica.exe"
+#define MyOutputBaseName "Setup_Leitura_Biblica_v" + MyAppVersion
+
 [Setup]
-AppName=Leitura Bíblica
-AppVersion=1.1.0
-AppPublisher=Lucas Carbone Vieira
-AppCopyright=© Lucas Carbone Vieira
-DefaultDirName={autopf}\Leitura Bíblica
-DefaultGroupName=Leitura Bíblica
+AppId={#MyAppId}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppCopyright=© {#MyAppPublisher}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
+DefaultGroupName={#MyAppName}
+DisableProgramGroupPage=yes
+UsePreviousAppDir=yes
+UsePreviousTasks=yes
+UninstallDisplayIcon={app}\{#MyAppExeName}
+
 OutputDir=Output
-OutputBaseFilename=Setup_Leitura_Biblica_v1.1.0
+OutputBaseFilename={#MyOutputBaseName}
 SetupIconFile=icon.ico
 WizardStyle=modern
-Compression=lzma2
+
+Compression=lzma2/ultra64
 SolidCompression=yes
-ArchitecturesInstallIn64BitMode=x64
+LZMAUseSeparateProcess=yes
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+
 PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+CloseApplications=yes
+RestartApplications=no
+SetupLogging=yes
+
+VersionInfoVersion={#MyAppVersion}
+VersionInfoCompany={#MyAppPublisher}
+VersionInfoDescription=Instalador do {#MyAppName}
+VersionInfoProductName={#MyAppName}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoCopyright=© {#MyAppPublisher}
+
+[Languages]
+Name: "brazilianportuguese"; MessagesFile: "compiler:Languages\BrazilianPortuguese.isl"
 
 [Files]
-Source: "dist\Leitura Bíblica.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [Tasks]
 Name: "desktopicon"; Description: "Criar atalho na Área de Trabalho"; GroupDescription: "Opções adicionais:"
 
 [Icons]
-Name: "{group}\Leitura Bíblica"; Filename: "{app}\Leitura Bíblica.exe"
-Name: "{autodesktop}\Leitura Bíblica"; Filename: "{app}\Leitura Bíblica.exe"; Tasks: desktopicon
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\Leitura Bíblica.exe"; Description: "Abrir Leitura Bíblica"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
