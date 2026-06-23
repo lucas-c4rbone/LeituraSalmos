@@ -1,4 +1,4 @@
-# GeradorSalmos
+# Gerador de Leitura Bíblica
 
 Gerador profissional de apresentações do Microsoft PowerPoint para leitura bíblica em igrejas, com interface moderna Fluent Design e animações suaves.
 
@@ -48,8 +48,9 @@ py main.py
 ```
 
 3. Na janela aberta (após a splash screen):
-   - Abra o Busca.com.br;
-   - Copie a leitura bíblica (ex: Salmos 32:1-5);
+   - Abra o [Busca.com.br](https://busca.tabernaculodafe.org.br/);
+   - Clique em Bíblia no canto inferior direito, selecione o livro e o capítulo;
+   - Dentro do capítulo, aperta ctrl + A e clique no botão de copiar azul;
    - Cole o texto no campo `Scripture`;
    - Informe o título da leitura;
    - (Opcional) Use **"▶ Intervalo de versículos"** para gerar apenas versículos específicos;
