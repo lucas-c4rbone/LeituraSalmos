@@ -116,20 +116,15 @@ def _placeholders_normalizados(placeholders: tuple[str, ...]) -> frozenset[str]:
     return frozenset(normalizar_placeholder(p) for p in placeholders)
 
 
-def _formas_texto_do_slide(slide: Any, lookup_cache: dict[int, list[Any]] | None = None) -> list[Any]:
-    """Return text-capable shapes for a slide, using optional cache.
+def _formas_texto_do_slide(slide: Any) -> list[Any]:
+    """Return text-capable shapes for a slide.
 
     Args:
         slide: PowerPoint slide COM object.
-        lookup_cache: Optional cache keyed by slide object id.
 
     Returns:
         list[Any]: Shapes that expose a non-empty text frame.
     """
-    cache_key = id(slide)
-    if lookup_cache is not None and cache_key in lookup_cache:
-        return lookup_cache[cache_key]
-
     formas: list[Any] = []
     for forma_raiz in slide.Shapes:
         for forma in iterar_formas(forma_raiz):
@@ -138,9 +133,6 @@ def _formas_texto_do_slide(slide: Any, lookup_cache: dict[int, list[Any]] | None
                     formas.append(forma)
             except (AttributeError, TypeError, ValueError):
                 continue
-
-    if lookup_cache is not None:
-        lookup_cache[cache_key] = formas
     return formas
 
 
@@ -178,7 +170,6 @@ def substituir_placeholder(
     novo_texto: str,
     centralizar_caixa: bool = False,
     justificar: bool = False,
-    lookup_cache: dict[int, list[Any]] | None = None,
 ) -> bool:
     """Replace placeholders on a slide with the provided text.
 
@@ -188,7 +179,6 @@ def substituir_placeholder(
         novo_texto: Replacement text.
         centralizar_caixa: Whether to center the updated shape.
         justificar: Whether to justify updated text paragraphs.
-        lookup_cache: Optional cache of text-capable slide shapes.
 
     Returns:
         bool: ``True`` if at least one replacement was applied.
@@ -196,7 +186,7 @@ def substituir_placeholder(
     substituiu = False
     placeholders_norm = _placeholders_normalizados(placeholders)
 
-    for forma in _formas_texto_do_slide(slide, lookup_cache):
+    for forma in _formas_texto_do_slide(slide):
         try:
             tr = forma.TextFrame.TextRange
             texto_atual = tr.Text
@@ -237,7 +227,6 @@ def exigir_placeholder(
     nome_placeholder: str,
     centralizar_caixa: bool = False,
     justificar: bool = False,
-    lookup_cache: dict[int, list[Any]] | None = None,
 ) -> None:
     """Require placeholder replacement and raise a friendly error if missing.
 
@@ -249,7 +238,6 @@ def exigir_placeholder(
         nome_placeholder: Placeholder name shown in error messages.
         centralizar_caixa: Whether to center the updated shape.
         justificar: Whether to justify updated text paragraphs.
-        lookup_cache: Optional cache of text-capable slide shapes.
 
     Raises:
         GeradorSalmosError: If no placeholder match is found.
@@ -260,7 +248,6 @@ def exigir_placeholder(
         novo_texto,
         centralizar_caixa=centralizar_caixa,
         justificar=justificar,
-        lookup_cache=lookup_cache,
     ):
         raise GeradorSalmosError(
             f"Placeholder '{nome_placeholder}' não encontrado no {descricao_slide}.\n\n"
@@ -404,8 +391,6 @@ def gerar_powerpoint(
     powerpoint: Any | None = None
     apresentacao: Any | None = None
     com_inicializado = False
-    lookup_cache: dict[int, list[Any]] = {}
-
     def _progresso(valor: int) -> None:
         if atualizar_progresso:
             atualizar_progresso(valor)
@@ -442,7 +427,6 @@ def gerar_powerpoint(
             leitura.livro_capitulo,
             "slide de título",
             PLACEHOLDER_LIVRO_CAP,
-            lookup_cache=lookup_cache,
         )
         exigir_placeholder(
             slide_titulo,
@@ -450,7 +434,6 @@ def gerar_powerpoint(
             titulo,
             "slide de título",
             PLACEHOLDER_TITULO,
-            lookup_cache=lookup_cache,
         )
         logger.debug("Title slide filled")
 
@@ -474,7 +457,6 @@ def gerar_powerpoint(
                 PLACEHOLDER_VERSICULO,
                 centralizar_caixa=True,
                 justificar=True,
-                lookup_cache=lookup_cache,
             )
             progresso = 25 + int(((indice + 1) / total) * 55)
             _progresso(progresso)

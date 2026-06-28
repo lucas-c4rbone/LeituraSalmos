@@ -144,6 +144,48 @@ def test_substituir_placeholder_with_center_and_justify() -> None:
     assert shape.TextFrame.TextRange.ParagraphFormat.Alignment == generator.PP_ALIGN_JUSTIFY
 
 
+def test_placeholders_are_resolved_independently_on_different_slides() -> None:
+    """Verify placeholder replacement resolves per-slide without leaking state."""
+    shape_slide_a = _Shape("{versiculo}")
+    shape_slide_b = _Shape("{versiculo}")
+    slide_a = _SlideForHelpers([shape_slide_a])
+    slide_b = _SlideForHelpers([shape_slide_b])
+
+    changed_a = generator.substituir_placeholder(slide_a, ("{versiculo}",), "A")
+    changed_b = generator.substituir_placeholder(slide_b, ("{versiculo}",), "B")
+
+    assert changed_a is True
+    assert changed_b is True
+    assert shape_slide_a.TextFrame.TextRange.Text == "A"
+    assert shape_slide_b.TextFrame.TextRange.Text == "B"
+
+
+def test_placeholder_lookup_never_shares_state_between_slides() -> None:
+    """Verify lookup on one slide cannot mutate or satisfy lookup on another slide."""
+    shape_slide_a = _Shape("{titulo}")
+    shape_slide_b = _Shape("Leitura: {titulo}")
+    slide_a = _SlideForHelpers([shape_slide_a])
+    slide_b = _SlideForHelpers([shape_slide_b])
+
+    generator.exigir_placeholder(slide_a, ("{titulo}",), "Salmo 23", "slide modelo 2", "{titulo}")
+    generator.exigir_placeholder(slide_b, ("{titulo}",), "Salmo 91", "slide modelo 3", "{titulo}")
+
+    assert shape_slide_a.TextFrame.TextRange.Text == "Salmo 23"
+    assert shape_slide_b.TextFrame.TextRange.Text == "Leitura: Salmo 91"
+
+
+def test_substituir_placeholder_supports_grouped_shapes() -> None:
+    """Verify replacement works when placeholder is inside grouped shapes."""
+    nested = _Shape("{versiculo}")
+    group = _Shape(has_text=False, shape_type=6, group_items=_GroupItems([nested]))
+    slide = _SlideForHelpers([group])
+
+    changed = generator.substituir_placeholder(slide, ("{versiculo}",), "1 - Bendito")
+
+    assert changed is True
+    assert nested.TextFrame.TextRange.Text == "1 - Bendito"
+
+
 def test_exigir_placeholder_raises_when_not_found() -> None:
     """Verify missing placeholders raise a user-facing domain error."""
     slide = _SlideForHelpers([_Shape("Sem placeholder")])
@@ -398,3 +440,97 @@ def test_gerar_powerpoint_invalid_output_target_type_raises(monkeypatch: pytest.
 
     with pytest.raises(GeradorSalmosError, match="não aponta para um arquivo válido"):
         generator.gerar_powerpoint("dummy", "Titulo")
+
+
+def test_gerar_powerpoint_repeated_calls_produce_identical_placeholder_operations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Verify repeated generation runs produce the same placeholder replacement sequence."""
+
+    class _Leitura:
+        livro = "Salmos"
+        capitulo = "23"
+        livro_capitulo = "Salmos 23"
+        versiculos = ["1 - A", "2 - B", "3 - C"]
+
+    class _Slide:
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.Shapes = []
+
+        def Duplicate(self) -> SimpleNamespace:
+            return SimpleNamespace(Item=lambda _i: _Slide(f"{self.name}-copy"))
+
+        def MoveTo(self, _index: int) -> None:
+            return None
+
+        def Delete(self) -> None:
+            return None
+
+    class _Slides:
+        Count = 4
+
+        def __init__(self) -> None:
+            self._slides = {
+                generator.TEMPLATE_TITLE_INDEX: _Slide("titulo"),
+                generator.TEMPLATE_PASTOR_INDEX: _Slide("pastor"),
+                generator.TEMPLATE_IGREJA_INDEX: _Slide("igreja"),
+                generator.TEMPLATE_FINAL_INDEX: _Slide("final"),
+            }
+
+        def __call__(self, index: int) -> _Slide:
+            return self._slides[index]
+
+    class _Presentation:
+        def __init__(self) -> None:
+            self.Slides = _Slides()
+            self.Saved = False
+
+        def SaveAs(self, _path: str, FileFormat: int) -> None:
+            return None
+
+        def Close(self) -> None:
+            return None
+
+    class _Presentations:
+        def Open(self, *_args: Any, **_kwargs: Any) -> _Presentation:
+            return _Presentation()
+
+    class _PowerPoint:
+        def __init__(self) -> None:
+            self.Presentations = _Presentations()
+
+        def Quit(self) -> None:
+            return None
+
+    call_sequences: list[list[tuple[str, str, str, bool, bool]]] = []
+    current_sequence: list[tuple[str, str, str, bool, bool]] = []
+
+    def _registrar_exigencia(
+        _slide: Any,
+        _placeholders: tuple[str, ...],
+        novo_texto: str,
+        descricao_slide: str,
+        nome_placeholder: str,
+        centralizar_caixa: bool = False,
+        justificar: bool = False,
+    ) -> None:
+        current_sequence.append((descricao_slide, nome_placeholder, novo_texto, centralizar_caixa, justificar))
+
+    monkeypatch.setattr(generator, "validar_modelo", lambda _p: None)
+    monkeypatch.setattr(generator, "validar_pasta_saida", lambda _p: None)
+    monkeypatch.setattr(generator, "ler_texto_entrada", lambda _t: _Leitura())
+    monkeypatch.setattr(generator, "caminho_saida_para", lambda _l, _c: tmp_path / "saida.pptx")
+    monkeypatch.setattr(generator, "abrir_powerpoint", lambda: _PowerPoint())
+    monkeypatch.setattr(generator, "exigir_placeholder", _registrar_exigencia)
+    monkeypatch.setattr(generator, "pythoncom", SimpleNamespace(CoInitialize=lambda: None, CoUninitialize=lambda: None))
+    monkeypatch.setattr(generator, "win32com", object())
+
+    for _ in range(2):
+        current_sequence = []
+        result = generator.gerar_powerpoint("dummy", "Titulo")
+        call_sequences.append(list(current_sequence))
+        assert result.caminho == tmp_path / "saida.pptx"
+        assert result.quantidade_versiculos == 3
+
+    assert call_sequences[0] == call_sequences[1]
